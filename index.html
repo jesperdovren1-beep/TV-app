@@ -171,14 +171,17 @@ async function loadPhotoList() {
   shuffle(photos); pi = 0;
 }
 async function nextPhoto() {
-  if (!photos.length) return;
+  if (!photos.length) throw new Error('Inga bilder i mappen');
   var id = photos[pi++ % photos.length];
   var css;
   if (DEMO) {
     css = id;
   } else {
-    var src = (await api('img=' + encodeURIComponent(id))).data;
-    await new Promise(function (res) { var im = new Image(); im.onload = im.onerror = res; im.src = src; });
+    var r = await api('img=' + encodeURIComponent(id));
+    var src = r.data;
+    if (!src) throw new Error('Tomt svar för ' + id);
+    var ok = await new Promise(function (res) { var im = new Image(); im.onload = function () { res(true); }; im.onerror = function () { res(false); }; im.src = src; });
+    if (!ok) throw new Error('Kan inte visa ' + (r.name || id) + ' (' + src.slice(5, src.indexOf(';')) + ', ' + Math.round(src.length / 1024) + ' kB)');
     css = 'url("' + src + '")';
   }
   var back = front === 'a' ? 'b' : 'a';
