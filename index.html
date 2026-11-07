@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TV-dashboard</title>
+<style>
+  :root { --fg:#fff; --muted:rgba(255,255,255,.65); --accent:#8ab4f8; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html, body { width:100%; height:100%; background:#000; color:var(--fg);
+    font-family:Roboto,"Segoe UI",Helvetica,Arial,sans-serif; overflow:hidden; cursor:none; }
+  .full { position:absolute; top:0; left:0; right:0; bottom:0; }
+  .bg { background:#111 center/cover no-repeat; opacity:0; transition:opacity 2s ease; }
+  .bg.show { opacity:1; }
+  #shade { background:linear-gradient(90deg, rgba(0,0,0,0) 38%, rgba(0,0,0,.55) 56%, rgba(0,0,0,.85) 74%); }
+  #panel { position:absolute; top:5vh; right:3.5vw; bottom:5vh; width:33vw;
+    display:flex; flex-direction:column; }
+  #clock { font-size:7.5vw; font-weight:300; line-height:1; letter-spacing:-.02em; }
+  #date { font-size:1.7vw; color:var(--muted); margin-top:.6vw; }
+  #weather { font-size:1.5vw; color:var(--muted); margin-top:2vw; }
+  #weather .t { font-size:3.2vw; color:var(--fg); font-weight:300; margin-right:1vw; }
+  #events { flex:1; overflow:hidden; margin-top:1vw; }
+  .day { font-size:1.05vw; text-transform:uppercase; letter-spacing:.12em; color:var(--accent);
+    margin:1.4vw 0 .5vw; }
+  .ev { display:flex; align-items:center; font-size:1.45vw; padding:.35vw 0; }
+  .ev .dot { width:.6vw; height:.6vw; border-radius:50%; flex:none; margin-right:1vw; }
+  .ev .tm { width:5.5vw; flex:none; color:var(--muted); }
+  .ev .ti { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #night { background:#000; opacity:0; transition:opacity 3s; }
+  body.night #night { opacity:.65; }
+  #status { position:absolute; left:2vw; bottom:2vh; font-size:.9vw; color:rgba(255,255,255,.4); }
+</style>
+</head>
+<body>
+  <div id="a" class="full bg"></div>
+  <div id="b" class="full bg"></div>
+  <div id="shade" class="full"></div>
+
+  <div id="panel">
+    <div>
+      <div id="clock">--:--</div>
+      <div id="date"></div>
+    </div>
+    <div id="weather"></div>
+    <div id="events"></div>
+  </div>
+
+  <div id="night" class="full"></div>
+  <div id="status"></div>
+
+<script>
+// ===== KONFIG (överskrivs via URL-parametrar) =====
+var Q = new URLSearchParams(location.search);
+var CFG = {
+  API: Q.get('api') || '',            // Apps Script /exec-URL
+  KEY: Q.get('k') || '',              // TOKEN – ligger aldrig i koden
+  LAT: Q.get('lat') || '57.7089',     // Göteborg som standard
+  LON: Q.get('lon') || '11.9746',
+  PHOTO_MS:     30 * 1000,            // bildbyte
+  EVENTS_MS:    10 * 60 * 1000,       // kalender
+  WEATHER_MS:   30 * 60 * 1000,       // väder
+  PHOTOLIST_MS:  6 * 3600 * 1000,     // ny bildlista
+  RELOAD_MS:     6 * 3600 * 1000,     // full omladdning (frigör minne)
+  NIGHT: [23, 6]                      // dimma 23–06
+};
+var DEMO = !CFG.API;
+
+var DAYS = ['söndag','måndag','tisdag','onsdag','torsdag','fredag','lördag'];
+var MONTHS = ['januari','februari','mars','april','maj','juni','juli','augusti','september','oktober','november','december'];
+
+function $(id) { return document.getElementById(id); }
+function pad(n) { return (n < 10 ? '0' : '') + n; }
+function esc(s) { return String(s).replace(/[&<>"']/g, function (c) {
+  return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]; }); }
+
+var errors = {};
+function setStatus(name, msg) {
+  if (msg) errors[name] = msg; else delete errors[name];
+  var parts = Object.keys(errors).map(function (k) { return k + ': ' + errors[k]; });
+  if (DEMO) parts.unshift('Demoläge – lägg till ?api=<exec-URL>&k=<token>');
+  $('status').textContent = parts.join('  ·  ');
+}
+function safe(name, fn) {
+  return function () {
+    return Promise.resolve().then(fn)
+      .then(function () { setStatus(name, ''); })
+      .catch(function (e) { setStatus(name, e.message || e); });
+  };
+}
+
+async function api(params) {
+  var url = CFG.API + '?k=' + encodeURIComponent(CFG.KEY) + (params ? '&' + params : '');
+  var r = await fetch(url);
+  var j = await r.json();
+  if (j.error) throw new Error(j.error);
+  return j;
+}
+
+// ===== KLOCKA =====
+function tick() {
+  var d = new Date();
+  $('clock').textContent = pad(d.getHours()) + ':' + pad(d.getMinutes());
+  var wd = DAYS[d.getDay()];
+  $('date').textContent = wd.charAt(0).toUpperCase() + wd.slice(1) + ' ' + d.getDate() + ' ' + MONTHS[d.getMonth()];
+  var h = d.getHours();
+  document.body.classList.toggle('night', h >= CFG.NIGHT[0] || h < CFG.NIGHT[1]);
+}
+
+// ===== KALENDER =====
+function evDate(e) {
+  if (e.allDay) { var p = e.start.split('-'); return new Date(+p[0], p[1] - 1, +p[2]); }
+  return new Date(e.start);
+}
+function dayLabel(d) {
+  var t = new Date(); t.setHours(0, 0, 0, 0);
+  var x = new Date(d.getTime()); x.setHours(0, 0, 0, 0);
+  var diff = Math.round((x - t) / 864e5);
+  if (diff <= 0) return 'Idag';
+  if (diff === 1) return 'Imorgon';
+  return DAYS[x.getDay()] + ' ' + x.getDate() + ' ' + MONTHS[x.getMonth()];
+}
+function renderEvents(list) {
+  var html = '', last = '';
+  list.forEach(function (e) {
+    var d = evDate(e), lab = dayLabel(d);
+    if (lab !== last) { html += '<div class="day">' + esc(lab) + '</div>'; last = lab; }
+    var tm = e.allDay ? 'Heldag' : pad(d.getHours()) + ':' + pad(d.getMinutes());
+    html += '<div class="ev"><span class="dot" style="background:' + esc(e.color || '#8ab4f8') + '"></span>'
+          + '<span class="tm">' + tm + '</span><span class="ti">' + esc(e.title) + '</span></div>';
+  });
+  $('events').innerHTML = html ||
+    '<div class="ev"><span class="ti" style="color:var(--muted)">Inga händelser kommande veckan</span></div>';
+}
+async function loadEvents() {
+  renderEvents(DEMO ? demoEvents() : (await api('')).events);
+}
+
+// ===== VÄDER (Open-Meteo, ingen nyckel) =====
+function wmo(c) {
+  if (c === 0) return 'Klart';
+  if (c === 1) return 'Mestadels klart';
+  if (c === 2) return 'Halvklart';
+  if (c === 3) return 'Mulet';
+  if (c === 45 || c === 48) return 'Dimma';
+  if (c >= 51 && c <= 57) return 'Duggregn';
+  if (c >= 61 && c <= 67) return 'Regn';
+  if (c >= 71 && c <= 77) return 'Snö';
+  if (c >= 80 && c <= 82) return 'Regnskurar';
+  if (c >= 85 && c <= 86) return 'Snöbyar';
+  if (c >= 95) return 'Åska';
+  return '';
+}
+async function loadWeather() {
+  var u = 'https://api.open-meteo.com/v1/forecast?latitude=' + CFG.LAT + '&longitude=' + CFG.LON
+        + '&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min'
+        + '&timezone=auto&forecast_days=1';
+  var j = await (await fetch(u)).json();
+  $('weather').innerHTML = '<span class="t">' + Math.round(j.current.temperature_2m) + '°</span>'
+    + '<span>' + wmo(j.current.weather_code) + ' · ' + Math.round(j.daily.temperature_2m_min[0])
+    + '° / ' + Math.round(j.daily.temperature_2m_max[0]) + '°</span>';
+}
+
+// ===== BILDSPEL =====
+var photos = [], pi = 0, front = 'a';
+function shuffle(a) {
+  for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = a[i]; a[i] = a[j]; a[j] = t; }
+  return a;
+}
+async function loadPhotoList() {
+  photos = DEMO ? DEMO_PHOTOS.slice() : (await api('photos=1')).photos;
+  shuffle(photos); pi = 0;
+}
+async function nextPhoto() {
+  if (!photos.length) return;
+  var id = photos[pi++ % photos.length];
+  var css;
+  if (DEMO) {
+    css = id;
+  } else {
+    var src = (await api('img=' + encodeURIComponent(id))).data;
+    await new Promise(function (res) { var im = new Image(); im.onload = im.onerror = res; im.src = src; });
+    css = 'url("' + src + '")';
+  }
+  var back = front === 'a' ? 'b' : 'a';
+  $(back).style.backgroundImage = css;
+  $(back).classList.add('show');
+  $(front).classList.remove('show');
+  front = back;
+}
+
+// ===== DEMODATA =====
+var DEMO_PHOTOS = [
+  'linear-gradient(135deg,#1e3c72,#2a5298)',
+  'linear-gradient(135deg,#355c4d,#9db48a)',
+  'linear-gradient(135deg,#5f2c82,#49a09d)',
+  'linear-gradient(135deg,#7b4397,#dc2430)'
+];
+function demoEvents() {
+  var d = new Date(), y = d.getFullYear(), m = d.getMonth(), dd = d.getDate();
+  function at(o, h, mi) { return new Date(y, m, dd + o, h, mi).toISOString(); }
+  function day(o) { var x = new Date(y, m, dd + o); return x.getFullYear() + '-' + pad(x.getMonth() + 1) + '-' + pad(x.getDate()); }
+  return [
+    { title:'Lunch', start:at(0, 12, 0), color:'#33b679' },
+    { title:'Middag med vänner', start:at(0, 19, 0), color:'#8e24aa' },
+    { title:'Sophämtning', start:day(1), allDay:true, color:'#f6bf26' },
+    { title:'Planeringsmöte', start:at(1, 9, 0), color:'#039be5' },
+    { title:'Tandläkare', start:at(3, 14, 30), color:'#e67c73' }
+  ];
+}
+
+// ===== START =====
+tick(); setInterval(tick, 10 * 1000);
+setStatus('', '');
+
+var runEvents = safe('Kalender', loadEvents);
+var runWeather = safe('Väder', loadWeather);
+var runPhotoList = safe('Bildlista', loadPhotoList);
+var runPhoto = safe('Bild', nextPhoto);
+
+runEvents(); setInterval(runEvents, CFG.EVENTS_MS);
+runWeather(); setInterval(runWeather, CFG.WEATHER_MS);
+runPhotoList().then(runPhoto);
+setInterval(runPhoto, DEMO ? 6000 : CFG.PHOTO_MS);
+setInterval(runPhotoList, CFG.PHOTOLIST_MS);
+setTimeout(function () { location.reload(); }, CFG.RELOAD_MS);
+</script>
+</body>
+</html>
