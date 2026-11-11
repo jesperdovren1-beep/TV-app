@@ -17,8 +17,22 @@
     display:flex; flex-direction:column; }
   #clock { font-size:6vw; font-weight:300; line-height:1; letter-spacing:-.02em; }
   #date { font-size:1.4vw; color:var(--muted); margin-top:.5vw; }
-  #weather { font-size:1.25vw; color:var(--muted); margin-top:1.5vw; }
-  #weather .t { font-size:2.6vw; color:var(--fg); font-weight:300; margin-right:1vw; }
+  #top { display:flex; justify-content:space-between; align-items:flex-start; }
+  #countdown { text-align:right; padding-top:.6vw; }
+  #countdown .lbl { font-size:1vw; text-transform:uppercase; letter-spacing:.12em; color:var(--accent); }
+  #countdown .num { font-size:3.4vw; font-weight:300; line-height:1.1; }
+  #countdown .unit { font-size:1.1vw; color:var(--muted); }
+  #weather { display:flex; align-items:flex-end; margin-top:1.5vw; color:var(--muted); }
+  #weather .now { flex:none; margin-right:1.6vw; }
+  #weather .t { font-size:2.6vw; color:var(--fg); font-weight:300; line-height:1; }
+  #weather .d { font-size:.85vw; margin-top:.3vw; white-space:nowrap; }
+  #weather .days { display:flex; flex:1; min-width:0; }
+  #weather .day7 { flex:1 1 0; min-width:0; text-align:center; font-size:.85vw; line-height:1.45; }
+  #weather .day7 + .day7 { border-left:1px solid rgba(255,255,255,.12); }
+  #weather .day7 .wd { color:var(--fg); font-weight:500; }
+  #weather .day7 .tt { color:var(--fg); }
+  #weather .day7 .pr { color:#8ab4f8; }
+  #weather .day7 .wi { color:var(--muted); }
   #events { flex:1; overflow:hidden; margin-top:1.2vw; display:flex; }
   .col { flex:1 1 0; min-width:0; overflow:hidden; }
   .col + .col { margin-left:2.4vw; }
@@ -42,9 +56,12 @@
   <div id="shade" class="full"></div>
 
   <div id="panel">
-    <div>
-      <div id="clock">--:--</div>
-      <div id="date"></div>
+    <div id="top">
+      <div>
+        <div id="clock">--:--</div>
+        <div id="date"></div>
+      </div>
+      <div id="countdown"></div>
     </div>
     <div id="weather"></div>
     <div id="events"></div>
@@ -66,7 +83,8 @@ var CFG = {
   WEATHER_MS:   30 * 60 * 1000,       // väder
   PHOTOLIST_MS:  6 * 3600 * 1000,     // ny bildlista
   RELOAD_MS:     6 * 3600 * 1000,     // full omladdning (frigör minne)
-  NIGHT: [23, 6]                      // dimma 23–06
+  NIGHT: [23, 6],                     // dimma 23–06
+  COUNTDOWN: { date: '2027-07-17', label: 'Vårt Bröllop' }
 };
 var DEMO = !CFG.API;
 
@@ -163,12 +181,31 @@ function wmo(c) {
 }
 async function loadWeather() {
   var u = 'https://api.open-meteo.com/v1/forecast?latitude=' + CFG.LAT + '&longitude=' + CFG.LON
-        + '&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min'
-        + '&timezone=auto&forecast_days=1';
-  var j = await (await fetch(u)).json();
-  $('weather').innerHTML = '<span class="t">' + Math.round(j.current.temperature_2m) + '°</span>'
-    + '<span>' + wmo(j.current.weather_code) + ' · ' + Math.round(j.daily.temperature_2m_min[0])
-    + '° / ' + Math.round(j.daily.temperature_2m_max[0]) + '°</span>';
+        + '&current=temperature_2m,weather_code'
+        + '&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max'
+        + '&wind_speed_unit=ms&timezone=auto&forecast_days=7';
+  var j = await (await fetch(u)).json(), D = j.daily, cells = '';
+  for (var i = 0; i < D.time.length; i++) {
+    var p = D.time[i].split('-'), dt = new Date(+p[0], p[1] - 1, +p[2]);
+    var wd = i === 0 ? 'Idag' : DAYS[dt.getDay()].slice(0, 3).replace(/^./, function (c) { return c.toUpperCase(); });
+    var mm = D.precipitation_sum[i];
+    cells += '<div class="day7"><div class="wd">' + wd + '</div>'
+      + '<div class="tt">' + Math.round(D.temperature_2m_max[i]) + '° / ' + Math.round(D.temperature_2m_min[i]) + '°</div>'
+      + '<div class="pr">' + (mm >= 0.1 ? (Math.round(mm * 10) / 10).toString().replace('.', ',') + ' mm' : '–') + '</div>'
+      + '<div class="wi">' + Math.round(D.wind_speed_10m_max[i]) + ' m/s</div></div>';
+  }
+  $('weather').innerHTML = '<div class="now"><div class="t">' + Math.round(j.current.temperature_2m) + '°</div>'
+    + '<div class="d">' + wmo(j.current.weather_code) + '</div></div><div class="days">' + cells + '</div>';
+}
+
+// ===== NEDRÄKNING =====
+function renderCountdown() {
+  var c = CFG.COUNTDOWN; if (!c) return;
+  var p = c.date.split('-'), t = new Date(+p[0], p[1] - 1, +p[2]), n = new Date(); n.setHours(0, 0, 0, 0);
+  var d = Math.round((t - n) / 864e5);
+  $('countdown').innerHTML = '<div class="lbl">' + esc(c.label) + '</div>'
+    + (d > 0 ? '<div class="num">' + d + '</div><div class="unit">' + (d === 1 ? 'dag kvar' : 'dagar kvar') + '</div>'
+             : '<div class="num">' + (d === 0 ? 'Idag!' : '♥') + '</div>');
 }
 
 // ===== BILDSPEL =====
@@ -226,6 +263,7 @@ function demoCalendars() {
 
 // ===== START =====
 tick(); setInterval(tick, 10 * 1000);
+renderCountdown(); setInterval(renderCountdown, 10 * 60 * 1000);
 setStatus('', '');
 
 var runEvents = safe('Kalender', loadEvents);
